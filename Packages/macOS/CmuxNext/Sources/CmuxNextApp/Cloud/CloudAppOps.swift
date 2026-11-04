@@ -211,8 +211,8 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
             return child
         },
         forkTranscript: { plan, childMachine in
-            await services.cloud.refresh(ifOlderThan: .zero)
-            let ready = await CloudWait.holds(within: .seconds(180)) { [services] in
+            let ready = await CloudWait.holds(tries: 60, each: .seconds(3),
+                                              redial: { await services.cloud.refresh(ifOlderThan: .zero) }) { [services] in
                 guard let session = services.machines.session(childMachine) else { return false }
                 return session.daemon.connection != nil
                     && session.daemon.store.workspaces.flatMap(\.screens).flatMap(\.panes).flatMap(\.tabs)

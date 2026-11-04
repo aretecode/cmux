@@ -1353,6 +1353,9 @@ fn call(attachment: &Attachment, command: AgentSessionCommand) -> Result<Value, 
         // A shared chat covers that chat only: a teammate lists no descendants.
         AgentSessionCommand::Children(_) if attachment.author.is_some() => Err(Refusal::NotTrusted),
         AgentSessionCommand::Children(_) => agent_session_children::list(attachment),
+        // Forking creates a machine/transcript descendant and is owner-only. Shared Cloud
+        // attachments may read and drive their pinned chat, but must not spend owner resources.
+        AgentSessionCommand::Fork(_) if attachment.author.is_some() => Err(Refusal::NotTrusted),
         AgentSessionCommand::Fork(ForkParams { through_seq, name, .. }) => {
             if through_seq == 0 || name.as_ref().is_some_and(|name| name.len() > 256) {
                 return Err(Refusal::BadRequest);
