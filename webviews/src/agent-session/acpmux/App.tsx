@@ -8202,10 +8202,13 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
       }),
       ...(forkable && {
         fork: (throughSeq: number) => void callNative("chat.fork", { throughSeq }).catch(() => undefined),
-        forkSeq,
         forkAny,
         promptTurns: stablePromptSeqs,
       }),
+      // Cloud's latest-turn action is available even when the harness does not advertise the
+      // ordinary transcript fork capability; ForkRuns supplies the machine copy and this action
+      // uses the child acpmux bridge for the transcript.
+      forkSeq,
       ...(cloudMachineID && forkSeq !== undefined && {
         tryAnotherApproach: async (throughSeq: number) => {
           if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
