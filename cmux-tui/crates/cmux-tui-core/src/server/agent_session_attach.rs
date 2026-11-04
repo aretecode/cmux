@@ -1359,14 +1359,16 @@ fn call(attachment: &Attachment, command: AgentSessionCommand) -> Result<Value, 
             }
             let mut params = json!({
                 "sessionId": session,
-                "_meta": {"acpmux": {"throughSeq": through_seq}},
+                "throughSeq": through_seq,
             });
             if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
                 params["name"] = Value::String(name);
             }
             attachment
                 .link
-                .call("session/fork", attachment.stamp(params), CALL_TIMEOUT)
+                // Use acp.session.fork, the validated through-turn boundary. A plain session/fork
+                // strips the internal throughSeq metadata and would copy a later snapshot.
+                .call("acp.session.fork", attachment.stamp(params), CALL_TIMEOUT)
                 .map_err(Refusal::of)
         }
         AgentSessionCommand::Media(MediaParams { path, .. }) => media(attachment, path),
