@@ -7,8 +7,7 @@ import Testing
             workspace: "workspace-gallery", sourceMachine: "vm_parent", session: "parent-session",
             harness: "claude", throughSeq: 6, clientKey: "try-parent-session-6",
             parentLabel: "Try another approach · Fetch retries")
-        let result = try await CloudTryAnotherApproach.run(
-            chat: "parent-chat", throughSeq: 6,
+        let result = try await CloudTryAnotherApproach(
             prepare: { chat, throughSeq in
                 #expect(chat == "parent-chat")
                 #expect(throughSeq == 6)
@@ -33,7 +32,7 @@ import Testing
                 #expect(plan.session == "parent-session")
                 #expect(plan.throughSeq == 6)
                 return "child-tab"
-            })
+            }).run(chat: "parent-chat", throughSeq: 6)
 
         #expect(result.childMachine == "vm_child")
         #expect(result.childSession == "child-session")

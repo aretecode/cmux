@@ -1,8 +1,8 @@
 import Foundation
 
 /// The latest-turn Cloud fork sequence. The app supplies the small host adapters for locating
-/// tabs and opening the child; this package owns the ordering and result contract.
-public enum CloudTryAnotherApproach {
+/// tabs and opening the child; this value owns the ordering and result contract.
+public struct CloudTryAnotherApproach: Sendable {
     public struct Plan: Sendable {
         public let workspace: String
         public let sourceMachine: String
@@ -37,10 +37,21 @@ public enum CloudTryAnotherApproach {
     public typealias ForkTranscript = @MainActor @Sendable (_ plan: Plan, _ childMachine: String) async throws -> String
     public typealias OpenChild = @MainActor @Sendable (_ plan: Plan, _ childMachine: String, _ session: String) async throws -> String
 
+    private let prepare: Prepare
+    private let forkMachine: ForkMachine
+    private let forkTranscript: ForkTranscript
+    private let openChild: OpenChild
+
+    public init(prepare: @escaping Prepare, forkMachine: @escaping ForkMachine,
+                forkTranscript: @escaping ForkTranscript, openChild: @escaping OpenChild) {
+        self.prepare = prepare
+        self.forkMachine = forkMachine
+        self.forkTranscript = forkTranscript
+        self.openChild = openChild
+    }
+
     @MainActor
-    public static func run(chat: String, throughSeq: Int, prepare: @escaping Prepare,
-                           forkMachine: @escaping ForkMachine, forkTranscript: @escaping ForkTranscript,
-                           openChild: @escaping OpenChild) async throws -> Result {
+    public func run(chat: String, throughSeq: Int) async throws -> Result {
         let plan = try prepare(chat, throughSeq)
         let child = try await forkMachine(plan)
         guard let childMachine = child.machineId else {

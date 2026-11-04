@@ -1,3 +1,4 @@
+import CmuxNextAgentPane
 import CmuxNextCloud
 import CmuxNextDaemon
 import Foundation
@@ -164,26 +165,36 @@ extension CloudClassicPageOps.Backend {
         }
     }
 }
+
+/// The child chat opener the transcript fork leaves for the last step: the child machine's pane and
+/// daemon are only known once the fork has found the restored parent there.
+@MainActor
+private final class CloudTryAnotherApproachChildOpener {
+    var open: (@MainActor (CloudTryAnotherApproach.Plan, String) async throws -> String)?
+}
+
+private func cloudTryAnotherApproachFailure(_ message: String) -> NSError {
+    NSError(domain: "cloud.tryAnotherApproach", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+}
+
 /// App adapters for the latest-turn Cloud fork. The sequence itself lives in CmuxNextCloud.
 @MainActor
 func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppServices) async throws -> [String: Any] {
-    func failure(_ message: String) -> NSError {
-        NSError(domain: "cloud.tryAnotherApproach", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-    }
-    var openChild: (@MainActor (CloudTryAnotherApproach.Plan, String) async throws -> String)?
-    let result = try await CloudTryAnotherApproach.run(
-        chat: key, throughSeq: throughSeq,
+    let opener = CloudTryAnotherApproachChildOpener()
+    let fork = CloudTryAnotherApproach(
         prepare: { chat, seq in
             guard seq > 0, services.cloud.auth.isSignedIn,
                   let (sourceTab, sourcePane) = services.locateTab(chat),
                   let sourceRecord = sourceTab.agentSession,
                   let sourceSession = sourceRecord.session,
-                  let harness = sourceRecord.harness else { throw failure("Cloud chat is unavailable") }
+                  let harness = sourceRecord.harness else {
+                throw cloudTryAnotherApproachFailure("Cloud chat is unavailable")
+            }
             let sourceDaemon = services.machines.daemon(forTab: sourceTab)
             guard let sourceCloud = services.machines.session(sourceDaemon.machineID),
                   let workspace = services.machines.allWorkspaces.first(where: { workspace, daemon in
                       daemon === sourceDaemon && workspace.screens.flatMap(\.panes).contains { $0 === sourcePane }
-                  })?.0 else { throw failure("Cloud chat is unavailable") }
+                  })?.0 else { throw cloudTryAnotherApproachFailure("Cloud chat is unavailable") }
             return .init(workspace: workspace.id, sourceMachine: sourceCloud.machineID, session: sourceSession,
                          harness: harness, throughSeq: seq,
                          clientKey: "cmux-next-try-another-approach-\(chat)-\(sourceSession)-\(seq)",
@@ -193,21 +204,22 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
             let owner = CloudOwnerAPIClient(
                 baseURL: FeedService.apiBaseURL(auth: services.cloud.auth),
                 accessToken: { try await services.cloud.auth.tokens().access }, teamID: { nil })
-            return try await owner.forkRun(workspace: plan.workspace, clientKey: plan.clientKey,
-                                           sourceMachine: plan.sourceMachine, session: plan.session,
-                                           harnesses: [plan.harness])
-                .first ?? { throw failure("Cloud did not return a child") }()
+            let children = try await owner.forkRun(workspace: plan.workspace, clientKey: plan.clientKey,
+                                                   sourceMachine: plan.sourceMachine, session: plan.session,
+                                                   harnesses: [plan.harness])
+            guard let child = children.first else { throw cloudTryAnotherApproachFailure("Cloud did not return a child") }
+            return child
         },
         forkTranscript: { plan, childMachine in
             await services.cloud.refresh(ifOlderThan: .zero)
             guard let childSession = services.machines.session(childMachine) else {
-                throw failure("Child machine is not connected")
+                throw cloudTryAnotherApproachFailure("Child machine is not connected")
             }
             let daemon = childSession.daemon
             guard let parentTab = daemon.store.workspaces.flatMap(\.screens).flatMap(\.panes).flatMap(\.tabs)
                     .first(where: { $0.agentSession?.session == plan.session }),
                   let pane = daemon.store.pane(holding: parentTab) else {
-                throw failure("Child machine did not restore the parent chat")
+                throw cloudTryAnotherApproachFailure("Child machine did not restore the parent chat")
             }
             let attach = AgentSessionAttachClient(surface: parentTab.surface.rawValue,
                                                    endpoint: { try await daemon.endpoint() })
@@ -215,7 +227,7 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
                 let forked = try await attach.fork(throughSeq: plan.throughSeq, name: plan.parentLabel)
                 await attach.close()
                 RemoteAgentSessionLinks.shared.noteFork(forked.session, parent: plan.session)
-                openChild = { plan, session in
+                opener.open = { plan, session in
                     let pending = try services.agentTabs.open(in: pane.handle, of: daemon, session: session,
                                                               idempotencyKey: plan.clientKey)
                     return try await pending.value().key
@@ -227,9 +239,10 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
             }
         },
         openChild: { plan, _, session in
-            guard let openChild else { throw failure("Child chat is unavailable") }
-            return try await openChild(plan, session)
+            guard let open = opener.open else { throw cloudTryAnotherApproachFailure("Child chat is unavailable") }
+            return try await open(plan, session)
         })
+    let result = try await fork.run(chat: key, throughSeq: throughSeq)
     return ["childMachine": result.childMachine, "childSession": result.childSession, "childTab": result.childTab,
             "parentLabel": result.parentLabel, "throughSeq": result.throughSeq]
 }

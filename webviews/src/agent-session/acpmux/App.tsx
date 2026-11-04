@@ -6394,6 +6394,9 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
   // This Mac's own name (`localMachineName`): `machineName` names a seeded chat's machine instead.
   const [localMachineName, setLocalMachineName] = useState<string | undefined>();
   const [cloudMachineID, setCloudMachineID] = useState<string | undefined>();
+  // The host bridge reads the current machine without re-registering every native handler.
+  const cloudMachineIDRef = useRef(cloudMachineID);
+  cloudMachineIDRef.current = cloudMachineID;
   const [cloudRepositoryAvailable, setCloudRepositoryAvailable] = useState(false);
   const [cloudChatIdentity, setCloudChatIdentity] = useState<CloudChatIdentity>();
   const [cloudCredentialRecoveryAvailable, setCloudCredentialRecoveryAvailable] = useState(false);
@@ -8209,19 +8212,23 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
       // ordinary transcript fork capability; ForkRuns supplies the machine copy and this action
       // uses the child acpmux bridge for the transcript.
       forkSeq,
-      ...(cloudMachineID && forkSeq !== undefined && {
-        tryAnotherApproach: async (throughSeq: number) => {
-          if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
-          const task = callNative("chat.tryAnotherApproach", { throughSeq });
-          const settled = task.then(() => undefined, () => undefined);
-          tryAnotherApproachInFlight.current = settled;
-          try {
-            await task;
-          } finally {
-            if (tryAnotherApproachInFlight.current === settled) tryAnotherApproachInFlight.current = undefined;
-          }
-        },
-      }),
+      ...(cloudMachineID &&
+        forkSeq !== undefined && {
+          tryAnotherApproach: async (throughSeq: number) => {
+            if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
+            const task = callNative("chat.tryAnotherApproach", { throughSeq });
+            const settled = task.then(
+              () => undefined,
+              () => undefined,
+            );
+            tryAnotherApproachInFlight.current = settled;
+            try {
+              await task;
+            } finally {
+              if (tryAnotherApproachInFlight.current === settled) tryAnotherApproachInFlight.current = undefined;
+            }
+          },
+        }),
       promptImage: (id: string) => directClient.current?.promptImage(id) ?? Promise.resolve(undefined),
       ...(stableEditSeqs.size > 0 && {
         edit: {
@@ -11910,7 +11917,8 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
           // Cloud's Try another approach is native-owned: it snapshots the current machine,
           // then asks the child acpmux to fork its latest transcript before opening a sibling.
           "chat.tryAnotherApproach": async ({ throughSeq }) => {
-            if (!cloudMachineID || Number(throughSeq) !== latestForkSeq(snapshotRef.current?.rows ?? [])) return undefined;
+            if (!cloudMachineIDRef.current || Number(throughSeq) !== latestForkSeq(snapshotRef.current?.rows ?? []))
+              return undefined;
             return callNative("chat.tryAnotherApproach", { throughSeq: Number(throughSeq) });
           },
           // Edit and resend (cx-ncc.60): a fork through the turn before the prompt, which then gets the
