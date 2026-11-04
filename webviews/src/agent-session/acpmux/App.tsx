@@ -440,7 +440,6 @@ import {
 } from "./conversation/turnActions";
 import { useTranscriptReadOnly } from "./conversation/readOnly";
 import { GuestActionsBoundary } from "./conversation/GuestActionsBoundary";
-import { tryAnotherApproach as runCloudTryAnotherApproach, type CloudForkRunsChild } from "./cloudTryAnotherApproach";
 import {
   RunInBackgroundContext,
   backgroundsWork,
@@ -6733,6 +6732,7 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
   const forkable = canFork(snapshot);
   const forkSeq = latestForkSeq(snapshot.rows);
   const forkAny = forksAnyTurn(snapshot.summary?.family);
+  const tryAnotherApproachInFlight = useRef<Promise<void> | undefined>(undefined);
   // Edit and resend (cx-ncc.60): rebuilt when the editable prompts change, not on every streamed row.
   // A running chat still permits editing an earlier completed prompt: editResend forks through that
   // prompt's preceding turn, leaving this branch running while the edited sibling starts its own turn.
@@ -8206,18 +8206,18 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
         forkAny,
         promptTurns: stablePromptSeqs,
       }),
-      ...(cloudMachineID && snapshot.sessionId && snapshot.summary?.harness && {
-        tryAnotherApproach: (throughSeq: number) =>
-          runCloudTryAnotherApproach(
-            {
-              sourceMachine: cloudMachineID,
-              session: snapshot.sessionId,
-              harness: snapshot.summary.harness,
-              checkpoint: throughSeq,
-              parentLabel: snapshot.summary.title || snapshot.summary.name || "Cloud chat",
-            },
-            (request) => callNative<CloudForkRunsChild>("chat.tryAnotherApproach", request),
-          ),
+      ...(forkable && cloudMachineID && forkSeq !== undefined && {
+        tryAnotherApproach: async (throughSeq: number) => {
+          if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
+          const task = callNative("chat.tryAnotherApproach", { throughSeq });
+          const settled = task.then(() => undefined, () => undefined);
+          tryAnotherApproachInFlight.current = settled;
+          try {
+            await task;
+          } finally {
+            if (tryAnotherApproachInFlight.current === settled) tryAnotherApproachInFlight.current = undefined;
+          }
+        },
       }),
       promptImage: (id: string) => directClient.current?.promptImage(id) ?? Promise.resolve(undefined),
       ...(stableEditSeqs.size > 0 && {
@@ -8415,7 +8415,6 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
       stableBranches,
       runningBranchSessions,
       forkable,
-      cloudMachineID,
       forkSeq,
       forkAny,
       stablePromptSeqs,
@@ -11879,22 +11878,6 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
               focus: () => composerHandle.current?.focus(),
             });
           },
-          // Cloud's full-workspace fork. Native owns the durable ForkRuns request and opens the
-          // restored child beside this chat; the parent is never selected or mutated.
-          "chat.tryAnotherApproach": async ({ throughSeq }) => {
-            if (!cloudMachineID || !snapshot.sessionId || !snapshot.summary?.harness) throw new Error("Cloud chat unavailable");
-            harnessSwitch.cancel();
-            return runCloudTryAnotherApproach(
-              {
-                sourceMachine: cloudMachineID,
-                session: snapshot.sessionId,
-                harness: snapshot.summary.harness,
-                checkpoint: Number(throughSeq),
-                parentLabel: snapshot.summary.title || snapshot.summary.name || "Cloud chat",
-              },
-              (request) => callNative<CloudForkRunsChild>("chat.tryAnotherApproach", request),
-            );
-          },
           // Fork Conversation from the app (the palette's step, the chat's right-click menu, its
           // shortcut): a fork through the chat's latest finished turn, or of a working chat as it is
           // now, opened where the app names (`placement`). A chat that cannot fork says why in its
@@ -11920,6 +11903,12 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
               persist: persistSession,
               focus: () => composerHandle.current?.focus(),
             });
+          },
+          // Cloud's Try another approach is native-owned: it snapshots the current machine,
+          // then asks the child acpmux to fork its latest transcript before opening a sibling.
+          "chat.tryAnotherApproach": async ({ throughSeq }) => {
+            if (!cloudMachineID || Number(throughSeq) !== latestForkSeq(snapshotRef.current?.rows ?? [])) return undefined;
+            return callNative("chat.tryAnotherApproach", { throughSeq: Number(throughSeq) });
           },
           // Edit and resend (cx-ncc.60): a fork through the turn before the prompt, which then gets the
           // edited text with the prompt's attachments; the original chat stays as it was.
