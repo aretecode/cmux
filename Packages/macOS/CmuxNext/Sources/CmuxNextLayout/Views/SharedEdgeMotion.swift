@@ -252,7 +252,7 @@ extension SharedEdgeMotion {
         init(screen: ScreenContentView, kind: DividerHandleView.Kind, axis: SplitAxis) {
             shift = axis == .horizontal ? (screen.scrolls(kind) ? screen.stripShift : 0) - screen.areaOffset(of: kind) : -screen.rowOffset(of: kind)
             scale = screen.scale
-            moves = SharedEdgeMotion.viewOffsetMoves(of: kind, axis: axis, on: screen)
+            moves = false // PROBE: the moving view offset guard is off
         }
 
         func edge(_ value: CGFloat) -> CGFloat {
