@@ -249,6 +249,13 @@ struct SharedEdgeDuringSpringTests {
             try #require(root.context.hosts[pane], "no host for \(pane)").frame[keyPath: side]
         }
 
+        /// The edge `side` of `pane` where the screen will draw it at rest (its spring's target, placed and on the pixel
+        /// grid as `ScreenContentView.applyPresentation` places hosts).
+        func restEdge(_ pane: PaneID, _ side: KeyPath<CGRect, CGFloat>) throws -> CGFloat {
+            let screen = try screen, frame = try #require(screen.paneFrames[pane], "no frame for \(pane)")
+            return screen.displayedRect(frame.targetRect, pane: pane).pixelEdges(screen.scale)[keyPath: side]
+        }
+
         /// The pointer `window` (window coordinates) along `axis` in the screen's space (flipped: y grows down).
         func along(_ axis: SplitAxis, _ window: CGPoint) throws -> CGFloat {
             let point = try screen.convert(window, from: nil)
@@ -260,8 +267,10 @@ struct SharedEdgeDuringSpringTests {
         /// with no event. In every frame it checks the shared edges, and that the dragged edge (edge `edge` of `dragged`,
         /// as the screen draws it, in view space) shows where it showed at the press plus the pointer's travel (rule D:
         /// a grab holds the edge where the person sees it, and the pointer alone moves it). With `floor` (the dragged
-        /// span's minimum from its anchor, edge `anchorEdge` of `anchor`) the edge stops at the anchor's place plus that
-        /// minimum and never comes closer. The press itself (a frame before the first move) moves nothing. Then the
+        /// span's minimum from its anchor, edge `anchorEdge` of `anchor`): where the pointer would put the edge nearer
+        /// the anchor's rest place than that minimum, the layout clamps it there, and the edge goes from where the
+        /// pointer holds it toward that place, never past it. The press itself (a frame before the first move) moves
+        /// nothing. Then the
         /// release (`releaseSpeed`: the pointer's speed at it, pt/s, set as the drag samples it), unless `release` takes
         /// it over (it gets the pointer and does the release itself).
         func drag(_ kind: DividerHandleView.Kind, dragged: PaneID, anchor: PaneID = "b1", axis: SplitAxis = .horizontal,
@@ -276,12 +285,17 @@ struct SharedEdgeDuringSpringTests {
             // The way the dragged span grows from its anchor along the axis (+1: the edge is past the anchor).
             let grows: CGFloat = try edge(dragged, side) >= (try edge(anchor, anchorEdge)) ? 1 : -1
             func expect(_ pointer: CGPoint, _ label: String) throws {
-                var want = start + (try along(axis, pointer)) - pressedAt
-                if let floor {
-                    let nearest = try edge(anchor, anchorEdge) + grows * floor
-                    want = grows > 0 ? max(want, nearest) : min(want, nearest)
-                }
+                let want = start + (try along(axis, pointer)) - pressedAt
                 let shown = try edge(dragged, side)
+                if let floor {
+                    let nearest = try restEdge(anchor, anchorEdge) + grows * floor
+                    if (want - nearest) * grows < 0 {
+                        if (shown - want) * grows < -tolerance || (shown - nearest) * grows > tolerance {
+                            misses.append("\(label): the dragged edge shows at \(Self.pt(shown)) pt, outside the pointer's \(Self.pt(want)) pt and the clamp \(Self.pt(nearest)) pt")
+                        }
+                        return
+                    }
+                }
                 if abs(shown - want) > tolerance {
                     misses.append("\(label): the dragged edge shows at \(Self.pt(shown)) pt, the pointer put it at \(Self.pt(want)) pt")
                 }
@@ -313,12 +327,17 @@ struct SharedEdgeDuringSpringTests {
             check(edges, "release")
         }
 
-        /// Every pane and divider frame as it shows now (their springs' values).
+        /// Every pane and divider frame as the screen would draw it now (its spring's value, placed in the view and on
+        /// the pixel grid as `ScreenContentView.applyPresentation` places hosts and handles).
         func shownFrames() throws -> [String: CGRect] {
-            let screen = try screen
+            let screen = try screen, scale = screen.scale
             var shown: [String: CGRect] = [:]
-            for (pane, frame) in screen.paneFrames { shown["pane \(pane)"] = frame.rect }
-            for (kind, frame) in screen.dividerFrames { shown["divider \(kind)"] = frame.rect }
+            for (pane, frame) in screen.paneFrames { shown["pane \(pane)"] = screen.displayedRect(frame.rect, pane: pane).pixelEdges(scale) }
+            for (kind, frame) in screen.dividerFrames {
+                let placed = frame.rect.offsetBy(dx: (screen.scrolls(kind) ? screen.stripShift : 0) - screen.areaOffset(of: kind),
+                                                 dy: -screen.rowOffset(of: kind))
+                shown["divider \(kind)"] = placed.pixelEdges(scale)
+            }
             return shown
         }
 
@@ -379,8 +398,10 @@ struct SharedEdgeDuringSpringTests {
         case .shrinkColumnDuringInnerSpring: Rig(widths: (0.15, 0.7, 0.15), ratio: 0.15)
         case .regrabVerticalSplitDuringEqualize: Rig.verticalSplit()
         case .dockEdgeDragDuringItsGrowth: Rig.rightDock()
-        // b1 with room on both sides (the default rig's b1 is 13 pt above its minimum, the clamp case wants that).
-        case .columnSlideThenSplitDrag: Rig(ratio: 0.5)
+        // b1 with room on both sides where its split is dragged while B moves (the default rig's b1 is 13 pt above its
+        // minimum: the anchor's motion would clamp it, which anchorPushesSplitToMinimum tests on purpose).
+        case .columnSlideThenSplitDrag, .keySpringThenSplitDrag, .keySpringThenPushDrag, .keySpringThenFlingRelease, .newPaneAtRelease:
+            Rig(ratio: 0.5)
         default: Rig()
         }
         defer { rig.window.closeAfterTest() }
@@ -482,9 +503,9 @@ struct SharedEdgeDuringSpringTests {
                          edges: edges)
             rig.land(edges, "landing")
         case .columnSlideThenColumnEdgeDrag, .columnSlideThenSplitDrag:
-            // A from 0.3 to 0.4 of the strip (a width change springs): B and C slide right as one. While they slide, B's
+            // A from 0.3 to 0.35 of the strip (a width change springs): B and C slide right as one. While they slide, B's
             // edge (or the split in B) is grabbed where it shows, dragged left, then held still: it does not slide on.
-            rig.model.setColumnWidth("A", width: 0.4, transaction: .make(), phase: .ended)
+            rig.model.setColumnWidth("A", width: 0.35, transaction: .make(), phase: .ended)
             rig.root.syncWithModel()
             for tick in 1...2 { rig.frame(edges, "slide frame \(tick)") }
             let b1 = try #require(try rig.screen.paneFrames["b1"])
@@ -526,7 +547,7 @@ struct SharedEdgeDuringSpringTests {
             // Column A grows (a width change, not a key press: a key press trades width with B and C stays): B and C
             // slide on its spring. A Shift drag of the split, and in its release's turn a split of c (c2 under c):
             // one layout pass makes the release and the new pane.
-            rig.model.setColumnWidth("A", width: 0.4, transaction: .make(), phase: .ended)
+            rig.model.setColumnWidth("A", width: 0.37, transaction: .make(), phase: .ended)
             rig.root.syncWithModel()
             for tick in 1...3 { rig.frame(edges, "growth frame \(tick)") }
             let room = try #require(try rig.screen.geometry.dividers.first { $0.id == "x" }).container.width
