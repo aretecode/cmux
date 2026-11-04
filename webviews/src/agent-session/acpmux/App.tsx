@@ -8206,7 +8206,7 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
         forkAny,
         promptTurns: stablePromptSeqs,
       }),
-      ...(forkable && cloudMachineID && forkSeq !== undefined && {
+      ...(cloudMachineID && forkSeq !== undefined && {
         tryAnotherApproach: async (throughSeq: number) => {
           if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
           const task = callNative("chat.tryAnotherApproach", { throughSeq });
