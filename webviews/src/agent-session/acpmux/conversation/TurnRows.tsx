@@ -464,11 +464,11 @@ export function TurnFooter({ row }: { row: AcpmuxRow }) {
               <button
                 type="button"
                 className="cv-iconbtn cv-iconbtn--compact cv-turn-try-another"
-                aria-label="Try another approach"
-                title="Try another approach"
+                aria-label={t("turn.tryAnotherApproach")}
+                title={t("turn.tryAnotherApproach")}
                 onClick={() => void tryAnotherApproach(seq)}
               >
-                Try another approach
+                {t("turn.tryAnotherApproach")}
               </button>
             )}
             {!messages && <PinButton rowId={row.id} />}
