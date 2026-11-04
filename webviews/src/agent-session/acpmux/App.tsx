@@ -8259,7 +8259,8 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
         forkSeq !== undefined && {
           tryAnotherApproach: async (throughSeq: number) => {
             if (tryAnotherApproachInFlight.current) return tryAnotherApproachInFlight.current;
-            const task = callNative("chat.tryAnotherApproach", { throughSeq });
+            // Straight to native: callNative would select the page action of the same name.
+            const task = postNative("chat.tryAnotherApproach", { throughSeq });
             const settled = task.then(
               () => undefined,
               () => undefined,
@@ -12002,10 +12003,11 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
           },
           // Cloud's Try another approach is native-owned: it snapshots the current machine,
           // then asks the child acpmux to fork its latest transcript before opening a sibling.
+          // postNative, never callNative: callNative would pick this same page action again.
           "chat.tryAnotherApproach": async ({ throughSeq }) => {
             if (!cloudMachineIDRef.current || Number(throughSeq) !== latestForkSeq(snapshotRef.current?.rows ?? []))
               return undefined;
-            return callNative("chat.tryAnotherApproach", { throughSeq: Number(throughSeq) });
+            return postNative("chat.tryAnotherApproach", { throughSeq: Number(throughSeq) });
           },
           // Edit and resend (cx-ncc.60): a fork through the turn before the prompt, which then gets the
           // edited text with the prompt's attachments; the original chat stays as it was.

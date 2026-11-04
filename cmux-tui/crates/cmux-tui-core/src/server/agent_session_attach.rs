@@ -1367,12 +1367,19 @@ fn call(attachment: &Attachment, command: AgentSessionCommand) -> Result<Value, 
             if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
                 params["name"] = Value::String(name);
             }
-            attachment
+            let forked = attachment
                 .link
                 // Use acp.session.fork, the validated through-turn boundary. A plain session/fork
                 // strips the internal throughSeq metadata and would copy a later snapshot.
                 .call("acp.session.fork", attachment.stamp(params), CALL_TIMEOUT)
-                .map_err(Refusal::of)
+                .map_err(Refusal::of)?;
+            // The fork's id is this machine's acpmux answer, never the request's: follow and
+            // remember it like a listed child, so `new-conversation-tab` admits its sibling tab
+            // (a fork carries `parentId`, which the children walk does not read).
+            if let Some(id) = forked.get("sessionId").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+                attachment.follow_children(&[id.to_owned()]);
+            }
+            Ok(forked)
         }
         AgentSessionCommand::Media(MediaParams { path, .. }) => media(attachment, path),
         // The session is the tab's own; acpmux bounds typing (2 a second, `typing.rate_limited`).
