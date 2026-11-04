@@ -1374,6 +1374,7 @@ impl Hub {
             stops: AtomicU64::new(0),
             cancels: AtomicU64::new(0),
             cancel_forced_turn: StdMutex::new(None),
+            unwritten_prompt: StdMutex::new(None),
             cancel_forced_result_turn: StdMutex::new(None),
             stopping: StdMutex::new(None),
             stop_restart: StdMutex::new(None),
