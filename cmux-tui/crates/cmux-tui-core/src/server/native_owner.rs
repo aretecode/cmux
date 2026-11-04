@@ -82,7 +82,7 @@ const CAPABILITIES: &[&str] = &[
     AGENT_SESSION_START_MODEL_CAPABILITY,
     agent_session_attach::AGENT_SESSION_PRESENCE_CAPABILITY,
     agent_session_attach::agent_session_children::AGENT_SESSION_CHILDREN_CAPABILITY,
-    agent_session_attach::AGENT_SESSION_FORK_CAPABILITY,
+    AGENT_SESSION_FORK_CAPABILITY,
     agent_transfer::AGENT_TRANSFER_CAPABILITY,
     agent_transfer::AGENT_TRANSFER_VM_KIND_CAPABILITY,
     agent_inventory::CAPABILITY,
@@ -221,6 +221,6 @@ mod fork_admission_tests {
     #[test]
     fn a_native_owner_may_fork_its_attached_chat() {
         assert!(admits(r#"{"cmd":"agent-session-fork","surface":1,"through_seq":3}"#));
-        assert!(CAPABILITIES.contains(&agent_session_attach::AGENT_SESSION_FORK_CAPABILITY));
+        assert!(CAPABILITIES.contains(&AGENT_SESSION_FORK_CAPABILITY));
     }
 }
