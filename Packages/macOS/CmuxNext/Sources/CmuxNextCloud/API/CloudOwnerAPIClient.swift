@@ -198,6 +198,7 @@ public struct CloudOwnerAPIClient: Sendable {
             throw CloudAPIError.http(status: http.statusCode, code: error?["code"] as? String, message: error?["message"] as? String)
         }
         return data
+    }
 
     private func postWorkspace<T: Decodable>(_ workspace: String, _ action: String, body: Body, timeout: Duration, as type: T.Type) async throws -> T {
         let access: String
