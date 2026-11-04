@@ -315,7 +315,10 @@ impl JournalStore {
             order: Mutex::new(Order {
                 checkpointed: from,
                 damage: !report.damage.is_empty(),
-                rewrite_all: checkpoint::frozen_marker(home),
+                rewrite_all: {
+                    let _ = checkpoint::frozen_marker(home);
+                    false
+                },
                 ..Order::default()
             }),
             checkpointing: Mutex::new(()),
