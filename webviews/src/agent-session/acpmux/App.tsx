@@ -440,6 +440,7 @@ import {
 } from "./conversation/turnActions";
 import { useTranscriptReadOnly } from "./conversation/readOnly";
 import { GuestActionsBoundary } from "./conversation/GuestActionsBoundary";
+import { tryAnotherApproach as runCloudTryAnotherApproach, type CloudForkRunsChild } from "./cloudTryAnotherApproach";
 import {
   RunInBackgroundContext,
   backgroundsWork,
@@ -8205,6 +8206,19 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
         forkAny,
         promptTurns: stablePromptSeqs,
       }),
+      ...(cloudMachineID && snapshot.sessionId && snapshot.summary?.harness && {
+        tryAnotherApproach: (throughSeq: number) =>
+          runCloudTryAnotherApproach(
+            {
+              sourceMachine: cloudMachineID,
+              session: snapshot.sessionId,
+              harness: snapshot.summary.harness,
+              checkpoint: throughSeq,
+              parentLabel: snapshot.summary.title || snapshot.summary.name || "Cloud chat",
+            },
+            (request) => callNative<CloudForkRunsChild>("chat.tryAnotherApproach", request),
+          ),
+      }),
       promptImage: (id: string) => directClient.current?.promptImage(id) ?? Promise.resolve(undefined),
       ...(stableEditSeqs.size > 0 && {
         edit: {
@@ -8401,6 +8415,7 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
       stableBranches,
       runningBranchSessions,
       forkable,
+      cloudMachineID,
       forkSeq,
       forkAny,
       stablePromptSeqs,
@@ -11863,6 +11878,22 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
               persist: persistSession,
               focus: () => composerHandle.current?.focus(),
             });
+          },
+          // Cloud's full-workspace fork. Native owns the durable ForkRuns request and opens the
+          // restored child beside this chat; the parent is never selected or mutated.
+          "chat.tryAnotherApproach": async ({ throughSeq }) => {
+            if (!cloudMachineID || !snapshot.sessionId || !snapshot.summary?.harness) throw new Error("Cloud chat unavailable");
+            harnessSwitch.cancel();
+            return runCloudTryAnotherApproach(
+              {
+                sourceMachine: cloudMachineID,
+                session: snapshot.sessionId,
+                harness: snapshot.summary.harness,
+                checkpoint: Number(throughSeq),
+                parentLabel: snapshot.summary.title || snapshot.summary.name || "Cloud chat",
+              },
+              (request) => callNative<CloudForkRunsChild>("chat.tryAnotherApproach", request),
+            );
           },
           // Fork Conversation from the app (the palette's step, the chat's right-click menu, its
           // shortcut): a fork through the chat's latest finished turn, or of a working chat as it is

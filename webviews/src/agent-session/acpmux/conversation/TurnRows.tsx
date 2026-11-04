@@ -35,6 +35,8 @@ import {
   ReadAloudButton,
   ReplyTime,
   ROW_ICON,
+  TryAnotherApproachButton,
+  tryAnotherApproachWithFeedback,
 } from "./MessageActions";
 import { RetryModelMenu } from "./RetryModelMenu";
 import { CloudSignIn } from "./CloudSignIn";
@@ -273,6 +275,7 @@ export function TurnFooter({ row }: { row: AcpmuxRow }) {
   const messages = useContext(PresentationContext) === "messages";
   const {
     fork,
+    tryAnotherApproach,
     forkSeq,
     forkAny,
     retry,
@@ -439,6 +442,12 @@ export function TurnFooter({ row }: { row: AcpmuxRow }) {
             )}
             {!messages && fork && seq !== undefined && (forkAny || seq === forkSeq) && (
               <ForkButton throughSeq={seq} onFork={() => forkWithFeedback(seq, () => fork(seq))} />
+            )}
+            {tryAnotherApproach && seq !== undefined && (
+              <TryAnotherApproachButton
+                throughSeq={seq}
+                onTry={() => tryAnotherApproachWithFeedback(seq, () => tryAnotherApproach(seq))}
+              />
             )}
             {!messages && <PinButton rowId={row.id} />}
             {!messages && text && <ReadAloudButton id={row.id} text={text} />}
