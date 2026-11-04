@@ -554,7 +554,6 @@ extension AgentTabStore {
             linkSource: services.cloud.configuration.linkSource,
             isSignedIn: services.cloud.auth.isSignedIn) else {
             cloudCredentialTransfer = nil
-            tryAnotherApproach = nil
             return
         }
         cloudCredentialTransfer = { [weak services] chat, request in

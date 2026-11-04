@@ -212,6 +212,13 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
         },
         forkTranscript: { plan, childMachine in
             await services.cloud.refresh(ifOlderThan: .zero)
+            let ready = await CloudWait.holds(within: .seconds(180)) { [services] in
+                guard let session = services.machines.session(childMachine) else { return false }
+                return session.daemon.connection != nil
+                    && session.daemon.store.workspaces.flatMap(\.screens).flatMap(\.panes).flatMap(\.tabs)
+                        .contains { $0.agentSession?.session == plan.session }
+            }
+            guard ready else { throw cloudTryAnotherApproachFailure("Child machine did not connect") }
             guard let childSession = services.machines.session(childMachine) else {
                 throw cloudTryAnotherApproachFailure("Child machine is not connected")
             }
@@ -224,9 +231,12 @@ func cloudTryAnotherApproach(chat key: String, throughSeq: Int, services: AppSer
             let attach = AgentSessionAttachClient(surface: parentTab.surface.rawValue,
                                                    endpoint: { try await daemon.endpoint() })
             do {
+                _ = try await attach.attach(afterSeq: nil, beforeSeq: nil, limit: 1, kinds: nil) { _, _ in }
                 let forked = try await attach.fork(throughSeq: plan.throughSeq, name: plan.parentLabel)
+                _ = try await attach.children()
                 await attach.close()
-                RemoteAgentSessionLinks.shared.noteFork(forked.session, parent: plan.session)
+                RemoteAgentSessionLinks.shared.noteFork(forked.session, parent: plan.session,
+                                                        host: AgentTabStore.registryHost(of: daemon))
                 opener.open = { plan, session in
                     let pending = try services.agentTabs.open(in: pane.handle, of: daemon, session: session,
                                                               idempotencyKey: plan.clientKey)
