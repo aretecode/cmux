@@ -58,6 +58,10 @@ nonisolated struct UniformEdge: Hashable, Sendable {
     /// every width. Nil when none is: at the strip's end the content pins the edge (shrinking every column moves it right,
     /// or not at all for the last column), and a width that adds camera travel would slide the edge after the frame. There
     /// the edge holds at its limit: the width it has now, while that adds no travel (nil only if it would).
+    /// RED PROOF ONLY (never merge): the old answer in the new shape, `.keep` for nil.
+    enum Target: Equatable { case width(CGFloat), keep }
+    func target(restingEdgeAt place: CGFloat) -> Target { width(restingEdgeAt: place).map(Target.width) ?? .keep }
+
     func width(restingEdgeAt place: CGFloat) -> CGFloat? {
         let k = CGFloat(index), n = CGFloat(widths.count)
         let before = widths.prefix(index).reduce(0, +), all = widths.reduce(0, +), base = place - left + before + shown
