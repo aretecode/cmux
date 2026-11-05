@@ -1112,3 +1112,150 @@ fn a_checkpoint_does_not_wait_for_a_frozen_record_on_another_thread() {
         "the restart lost a line of the frozen store"
     );
 }
+
+// ---------------------------------------------------------------- delta review of #35866 (repros, never land)
+
+/// Delta review of #35866 at `f62feba6e3d` (`r-durability-rsync-reviewer`), finding D1: the
+/// shutdown's last checkpoint runs after the journal's seal (`Hub::seal`: `Store::seal`, then
+/// `Store::flush`; the daemon's exit past its budget does the same after `Hub::flush`). A log sync
+/// that fails in it freezes the store, but the `frozen` record finds the journal closed
+/// (`AppendError::Closed`) and only an error is logged. The restart in the same boot takes the
+/// whole-log path, its checkpoint's sync of a new descriptor reports success for the pages the
+/// failed sync dropped, and it retires their records: an OS crash then loses acknowledged lines.
+/// Branch `fix/r-durability-rsync-review-frozen-record-nomerge`; never merged.
+#[test]
+fn rsync_review2_a_sync_that_fails_after_the_seal_keeps_the_rewrite() {
+    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+    let journal = SimStorage::new(95);
+    let store = open(home.path(), &journal);
+    store.append(CHAT, &record(1, "created")).unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    // The shutdown's first checkpoint (`Hub::flush`).
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    // Lines that land before the seal (a request on an open connection, an agent past the
+    // budget), acknowledged: their records are durable.
+    for seq in 2..=5 {
+        store.append(CHAT, &record(seq, "queued")).unwrap_or_else(|e| panic!("{e:#}"));
+    }
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    // `Hub::seal`: the seal, then the last checkpoint, whose log sync fails.
+    store.seal();
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(true));
+    let failed = store.flush();
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(false));
+    assert!(failed.is_err(), "the last checkpoint went on past a failed log sync");
+    // The daemon exits and starts again in the same boot; the restart's first checkpoint runs.
+    drop(store);
+    let store = open(home.path(), &journal);
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    let crashed = journal.restart(Crash::Os);
+    drop(store);
+    sync_model::os_crash(&home.path().join("sessions"));
+    let store = open(home.path(), &crashed);
+    assert_eq!(
+        seqs(store.as_ref(), CHAT),
+        (1..=5).collect::<Vec<_>>(),
+        "a log sync that failed after the seal journaled no frozen record: the restart trusted the log's pages and lost acked lines"
+    );
+}
+
+/// D1, a seal between the freeze's two steps: the `frozen` record finds the journal's queue full
+/// (`FORCE_FROZEN_BACKLOG`), and while the freeze waits for the writer (`HOLD_BEFORE_FROZEN_RECORD`)
+/// a shutdown that another cause began (a signal, an update's handoff) seals the journal. The
+/// retried append finds the journal closed. So "no seal can come between `frozen` and the
+/// record" holds only when the first append is taken.
+#[test]
+fn rsync_review2_a_seal_between_a_freeze_and_its_retry_keeps_the_rewrite() {
+    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+    let journal = SimStorage::new(96);
+    let store: Arc<dyn Store> = Arc::from(open(home.path(), &journal));
+    store.append(CHAT, &record(1, "created")).unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    for seq in 2..=5 {
+        store.append(CHAT, &record(seq, "queued")).unwrap_or_else(|e| panic!("{e:#}"));
+    }
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    let (arrived_tx, arrived) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let failing = {
+        let store = Arc::clone(&store);
+        std::thread::spawn(move || {
+            HOLD_BEFORE_FROZEN_RECORD
+                .with(|hold| *hold.borrow_mut() = Some((arrived_tx, release_rx)));
+            FORCE_FROZEN_BACKLOG.with(|force| force.set(true));
+            FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(true));
+            let result = store.flush_session(CHAT);
+            FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(false));
+            result
+        })
+    };
+    arrived.recv_timeout(WAIT).unwrap_or_else(|e| panic!("the failed sync never froze: {e}"));
+    // The shutdown's seal (`Hub::seal`), begun by another cause.
+    store.seal();
+    let _ = release.send(());
+    let failed = failing.join().unwrap_or_else(|_| panic!("the failing thread panicked"));
+    assert!(failed.is_err(), "flush_session's sync did not fail as the test asked");
+    // The restart in the same boot; its first checkpoint runs.
+    drop(store);
+    let store = open(home.path(), &journal);
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    let crashed = journal.restart(Crash::Os);
+    drop(store);
+    sync_model::os_crash(&home.path().join("sessions"));
+    let store = open(home.path(), &crashed);
+    assert_eq!(
+        seqs(store.as_ref(), CHAT),
+        (1..=5).collect::<Vec<_>>(),
+        "a seal between the freeze and its retried frozen record lost the record: the restart trusted the log's pages and lost acked lines"
+    );
+}
+
+/// D1, the queue-full form with no test seam in the store: the writer is behind (one sync of a
+/// slow or failing disk takes 8 s here) and other chats' lines fill its queue. A request's
+/// `flush_session` fails its log sync; its `frozen` record finds the queue full, the wait for the
+/// writer (`SEAL_WAIT`, 5 s) ends first, and the retried append finds it full again. Only an error
+/// is logged, and the restart in the same boot trusts the log's pages.
+#[test]
+fn rsync_review2_a_frozen_record_refused_twice_keeps_the_rewrite() {
+    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+    let journal = SimStorage::new(97);
+    let small = cmux_journal::Config { max_pending_bytes: 8 * 1024, ..journal_config() };
+    let open_small = |sim: &SimStorage| {
+        open_with_journal(&config(), home.path(), Arc::new(sim.clone()), small.clone())
+            .unwrap_or_else(|e| panic!("open the store: {e:#}"))
+    };
+    let store = open_small(&journal);
+    store.append(CHAT, &record(1, "created")).unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    for seq in 2..=5 {
+        store.append(CHAT, &record(seq, "queued")).unwrap_or_else(|e| panic!("{e:#}"));
+    }
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    // The writer is behind: each sync takes 8 s, and another chat's lines fill its queue.
+    journal.set_sync_delay(Duration::from_secs(8));
+    let full = (1..=100_000u64).any(|seq| store.append("chat-b", &record(seq, "queued")).is_err());
+    assert!(full, "the journal's queue never filled");
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(true));
+    let started = std::time::Instant::now();
+    let failed = store.flush_session(CHAT);
+    let took = started.elapsed();
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(false));
+    journal.set_sync_delay(Duration::ZERO);
+    assert!(failed.is_err(), "flush_session's sync did not fail as the test asked");
+    eprintln!("rsync_review2: the failed flush_session returned after {took:?}");
+    // The daemon stops for a restart in the same boot (no crash); the restart's checkpoint runs.
+    drop(store);
+    let store = open_small(&journal);
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    let crashed = journal.restart(Crash::Os);
+    drop(store);
+    sync_model::os_crash(&home.path().join("sessions"));
+    let store = open_small(&crashed);
+    assert_eq!(
+        seqs(store.as_ref(), CHAT),
+        (1..=5).collect::<Vec<_>>(),
+        "the frozen record found the journal's queue full twice and was not journaled: the restart trusted the log's pages and lost acked lines"
+    );
+}
