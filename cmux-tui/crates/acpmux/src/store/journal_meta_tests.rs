@@ -1304,3 +1304,54 @@ fn a_checkpoint_does_not_wait_for_a_freezes_fallback_marker() {
     assert!(checkpointed.is_err(), "a checkpoint went past a freeze");
     assert!(home.path().join("journal-frozen").exists(), "the refused record left no marker");
 }
+
+// ---------------------------------------------------------------- delta review 2 of #35866 (repro, never land)
+
+/// Delta review of #35866 at `a2475c77387` (`r-durability-rsync-reviewer`), residual: a kill while
+/// the `frozen` record waits in the journal's queue. The journal's writer is in a slow sync of an
+/// earlier batch (2 s here; a failing disk is slow), a request's `flush_session` fails its log
+/// sync, and the store freezes: the record is taken into the queue (`append_control`), so no
+/// marker is written. A kill (SIGKILL, a crash) before the writer writes it loses it. The restart
+/// in the same boot then finds no record and no marker, trusts the log's pages, and its
+/// checkpoint retires the records of lines the failed sync dropped. Branch
+/// `fix/r-durability-rsync-review-kill-window-nomerge`; never merged.
+#[test]
+fn rsync_review3_a_kill_while_the_frozen_record_waits_in_the_queue_keeps_the_rewrite() {
+    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+    let journal = SimStorage::new(101);
+    let store = open(home.path(), &journal);
+    store.append(CHAT, &record(1, "created")).unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    for seq in 2..=5 {
+        store.append(CHAT, &record(seq, "queued")).unwrap_or_else(|e| panic!("{e:#}"));
+    }
+    // Acknowledged: their records are durable.
+    assert!(store.wait_durable(WAIT).unwrap_or_else(|e| panic!("{e:#}")), "never durable");
+    // The writer is busy: chat-b's record waits in a 2 s sync.
+    journal.set_sync_delay(Duration::from_secs(2));
+    store.append("chat-b", &record(1, "created")).unwrap_or_else(|e| panic!("{e:#}"));
+    std::thread::sleep(Duration::from_millis(300));
+    // A request's flush_session: its log sync fails, the store freezes; the frozen record waits
+    // in the queue behind the sync under way.
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(true));
+    let failed = store.flush_session(CHAT);
+    FAIL_NEXT_LOG_SYNC.with(|fail| fail.set(false));
+    assert!(failed.is_err(), "flush_session's sync did not fail as the test asked");
+    let marker = home.path().join("journal-frozen").exists();
+    // A kill now, before the writer writes the record.
+    let killed = journal.restart(Crash::Process);
+    drop(store);
+    // The restart in the same boot; its first checkpoint runs.
+    let store = open(home.path(), &killed);
+    store.flush().unwrap_or_else(|e| panic!("{e:#}"));
+    let crashed = killed.restart(Crash::Os);
+    drop(store);
+    sync_model::os_crash(&home.path().join("sessions"));
+    let store = open(home.path(), &crashed);
+    assert_eq!(
+        seqs(store.as_ref(), CHAT),
+        (1..=5).collect::<Vec<_>>(),
+        "a kill while the frozen record waited in the journal's queue lost it (marker written: {marker}): the restart trusted the log's pages and lost acked lines"
+    );
+}
