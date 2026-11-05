@@ -4,8 +4,9 @@
 //
 // - Codex and ChatGPT: the turn's work, its interim chatter with it, folds under one "Worked for";
 //   the final answer stays below it.
-// - Claude: no "Worked for". Each run of calls folds into its own summary line; every assistant
-//   message stays in place, and the final answer stays last.
+// - Claude, as Claude desktop: no "Worked for". Each run of calls, the short notes inside it with
+//   it, folds into its own summary line; a longer message between runs stays in place; the final
+//   answer stays last.
 // - Both: a steer and the reply before it are never folded (Leo, 2026-10-31: "THE FACT THAT YOUR
 //   INTERIM MESSAGE YOU SENT BETWEEN STEERS GOT COLLAPSED" was the miss).
 //
@@ -76,12 +77,13 @@ async function replayRows(): Promise<AcpmuxRow[]> {
   return rows;
 }
 
+const SHORT = /^Checking step \d+\.$/;
 const LONG = /^Step (\d+) found/;
 /// Which message a long row is (its number in the recording).
 const longAt = (row: AcpmuxRow) => Number(LONG.exec(row.text ?? "")?.[1]);
 const assistants = (rows: readonly AcpmuxRow[]) => rows.filter((row) => row.kind === "assistant");
 
-test("the recorded Claude turn ends as Claude desktop draws it: a line per run, all assistant messages between", async () => {
+test("the recorded Claude turn ends as Claude desktop draws it: a line per run, longer messages between", async () => {
   const rows = await replayRows();
   const view = turnView(rows, new Set(), { now: history.at(-1).at + 60_000, liveRuns: true, agentFamily: "claude" });
   expect(view.some((row) => row.kind === WORKED)).toBe(false);
@@ -89,9 +91,20 @@ test("the recorded Claude turn ends as Claude desktop draws it: a line per run, 
   const runs = view.filter((row) => row.kind === "activity" && !row.merged);
   expect(runs.length).toBeGreaterThan(1);
   expect(runs.every((row) => row.foldRun === true)).toBe(true);
-  // Assistant text stays in the transcript regardless of its length.
-  expect(assistants(view).map((row) => row.text)).toEqual(assistants(rows).map((row) => row.text));
-  expect(runs.flatMap((row) => row.items ?? []).some((item) => item.kind === "note")).toBe(false);
+  // The short notes between calls are inside the runs: none stands between two runs.
+  const between = view.flatMap((row, at) =>
+    row.kind === "assistant" && SHORT.test(row.text ?? "") && view[at - 1]?.foldRun && view[at + 1]?.foldRun
+      ? [
+          [
+            row.text,
+            view[at - 1]!.items?.map((item) => item.tool?.kind ?? item.kind),
+            view[at + 1]!.items?.map((item) => item.tool?.kind ?? item.kind),
+          ],
+        ]
+      : [],
+  );
+  expect(between).toEqual([]);
+  expect(runs.some((row) => (row.items ?? []).some((item) => item.kind === "note"))).toBe(true);
   // The longer messages stay in place between the runs, and the final answer is the turn's last words.
   expect(
     assistants(view)
@@ -150,23 +163,13 @@ test("a steered Claude turn keeps the steer and the reply before it in sight, ea
   });
   // The stretch the person came in on ends on its own footer, right over the steer (turns.ts
   // supersededFooters).
-  expect(view.map((row) => row.id)).toEqual([
-    "u",
-    "b1",
-    "n1",
-    "b2",
-    "r1",
-    "b3",
-    `${SUPERSEDED}-s1`,
-    "s1",
-    "b4",
-    "n2",
-    "b5",
-    "answer",
-    "sum",
-  ]);
-  expect(assistants(view).map((row) => row.text)).toEqual(assistants(steered()).map((row) => row.text));
-  expect(view.filter((row) => row.kind === "activity").every((row) => row.foldRun)).toBe(true);
+  expect(view.map((row) => row.id)).toEqual(["u", "b1", "r1", "b3", `${SUPERSEDED}-s1`, "s1", "b4", "answer", "sum"]);
+  // The notes inside a run draw as its quiet lines; the reply before the steer is never one.
+  const notes = (id: string) =>
+    (view.find((row) => row.id === id)?.items ?? []).filter((item) => item.kind === "note").map((item) => item.text);
+  expect(notes("b1")).toEqual(["Checking the minis."]);
+  expect(notes("b4")).toEqual(["Now the runners."]);
+  expect(notes("b3")).toEqual([]);
 });
 
 test("a steered Codex turn still folds everything but the steer, the reply before it and the answer", () => {

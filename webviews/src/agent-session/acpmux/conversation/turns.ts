@@ -840,7 +840,7 @@ function shapeTurn(
   // summary that is no longer running draws as it came.
   if (end < 0)
     return live
-      ? liveTurn(user, turn, clockOffset, liveRuns, sessionStatus, lineBelow, trayAgents, agentFamily)
+      ? liveTurn(user, turn, clockOffset, liveRuns, sessionStatus, lineBelow, trayAgents)
       : last
         ? planLast(turn.flatMap(withoutDrafts).map(endedPlan))
         : settledWithoutSummary(turn);
@@ -852,7 +852,7 @@ function shapeTurn(
   // Each harness family ends a turn as its own app does (Leo, 2026-11-01: "separate it per
   // harness/model family. claude gets claude behaviour, codex gets codex"). Codex and ChatGPT fold
   // the whole turn's work under one "Worked for". Claude, as Claude desktop: no "Worked for"; each
-  // run of calls folds into its own summary line, and every assistant
+  // run of calls, the short notes inside it with it, folds into its own summary line, and a longer
   // message between runs stays in place (Leo, 2026-11-04: "you can't do it for Claude ... it's just
   // too lossy if you do it for Claude"); its whole-turn "Worked for" is an opt-in only.
   // The family's row of the one table (turnFoldStyle.ts) says how: Codex and ChatGPT under one
@@ -947,18 +947,16 @@ function shapeTurn(
       const runs = liveRuns || style.runs;
       if (open)
         shaped.push(
-          ...(runs && style.conclusion ? mergeShortNotes(work, steerDialogue, style.runs) : work)
-            .flatMap(withoutDrafts)
-            .map((row) => ({
-              ...endedPlan(row),
-              id: isEdit(row) ? `${row.id}${FOLDED}` : row.id,
-              settled: true,
-              // A finished turn's earlier replies fold here too; each keeps its action row, while a
-              // short note stays quiet (Leo, 2026-10-29: replies keep their action row).
-              ...(replies.has(row.id) && { foldedReply: true }),
-              // A folded run draws otherwise, so its version moves (memos compare versions).
-              ...(runs && row.kind === "activity" && { foldRun: true, version: row.version * RUN_STATES + 3 }),
-            })),
+          ...(runs ? mergeShortNotes(work, steerDialogue, style.runs) : work).flatMap(withoutDrafts).map((row) => ({
+            ...endedPlan(row),
+            id: isEdit(row) ? `${row.id}${FOLDED}` : row.id,
+            settled: true,
+            // A finished turn's earlier replies fold here too; each keeps its action row, while a
+            // short note stays quiet (Leo, 2026-10-29: replies keep their action row).
+            ...(replies.has(row.id) && { foldedReply: true }),
+            // A folded run draws otherwise, so its version moves (memos compare versions).
+            ...(runs && row.kind === "activity" && { foldRun: true, version: row.version * RUN_STATES + 3 }),
+          })),
         );
     }
     // Context and actionable rows stay available beside the fold. Render cards keep their
@@ -1084,16 +1082,7 @@ function shapeTurn(
     (tail.some((row) => row.kind === "activity") || tail.slice(lastSummary + 1).some(isReply))
   )
     shaped.push(
-      ...liveTurn(
-        { ...summary, at: since },
-        answered,
-        clockOffset,
-        liveRuns,
-        sessionStatus,
-        lineBelow,
-        trayAgents,
-        agentFamily,
-      ),
+      ...liveTurn({ ...summary, at: since }, answered, clockOffset, liveRuns, sessionStatus, lineBelow, trayAgents),
     );
   else shaped.push(...(live ? answered : answered.flatMap(withoutDrafts).map(endedPlan)));
   return shaped;
@@ -1406,12 +1395,8 @@ function liveTurn(
   sessionStatus = false,
   lineBelow = false,
   trayAgents = 0,
-  agentFamily?: string,
 ): AcpmuxRow[] {
-  return withRetry(
-    turn,
-    shapeLiveTurn(user, turn, clockOffset, liveRuns, sessionStatus, lineBelow, trayAgents, agentFamily),
-  );
+  return withRetry(turn, shapeLiveTurn(user, turn, clockOffset, liveRuns, sessionStatus, lineBelow, trayAgents));
 }
 
 /// The running turn's retries (the client's `TURN_RETRY` row, direct.ts) on its "Thinking" line:
@@ -1443,7 +1428,6 @@ function shapeLiveTurn(
   sessionStatus = false,
   lineBelow = false,
   trayAgents = 0,
-  agentFamily?: string,
 ): AcpmuxRow[] {
   const drawn = turn.filter((row) => row.kind !== "typing" && !isVisiblyEmptyMessage(row));
   // A started chat's card that no row follows yet is not the turn's latest step. The latest step is
@@ -1454,10 +1438,8 @@ function shapeLiveTurn(
   // The Codex-style live line names the call in flight; a command still running in an earlier run
   // (a parallel `cp` while the agent messages others) leaves its run for the line too.
   const named = lineBelow && liveRuns && last ? lineCall(drawn, last) : undefined;
-  // Families without a conclusion fold keep all prose visible, including short results.
-  const grouped =
-    liveRuns && turnFoldStyle(agentFamily).conclusion ? mergeShortNotes(drawn, steerDialogueIn(drawn)) : drawn;
-  const rows = liveRuns ? codexRuns(grouped, named?.tool.id) : drawn;
+  // A reply before a steer never joins a run, as in the ended turn (steerDialogueIn).
+  const rows = liveRuns ? codexRuns(mergeShortNotes(drawn, steerDialogueIn(drawn)), named?.tool.id) : drawn;
   // The status ticks on this computer's clock, from the prompt moved onto it.
   const at = user.at + clockOffset;
   if (lineBelow && liveRuns) {
