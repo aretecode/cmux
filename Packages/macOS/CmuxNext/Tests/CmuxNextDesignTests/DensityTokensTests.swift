@@ -15,7 +15,7 @@ import Testing
         ("sidebarWidth", 208), ("titlebarHeight", 32), ("sidebarRowHeight", 24), ("sidebarRowHeightWithSubtitle", 36),
         ("sidebarHeaderHeight", 22), ("roomDotDiameter", 8), ("roomDotSlot", 24), ("tabHeight", 24), ("controlHeight", 24),
         ("tabMaxWidth", 200), ("tabMinWidth", 32), ("paletteRowHeight", 28), ("paletteSearchHeight", 44), ("paletteWidth", 640),
-        ("panelInset", 6), ("columnGap", 6), ("densityPaneCornerRadius", 10), ("panelCornerRadius", 10), ("itemCornerRadius", 6),
+        ("panelInset", 6), ("columnGap", 6), ("densityPaneCornerRadius", 10),
         ("iconSize", 14), ("smallIconSize", 12), ("scrollEdgeFade", 18),
     ]
 
@@ -35,6 +35,8 @@ import Testing
                 #expect(value == expected, "\(name) at Compact is \(value), was \(expected)")
             }
             #expect(Metrics.tabStripHeight == (Metrics.compactTabs ? 26 : 28))
+            // Panels and items are levels of the one corner radius now (`Metrics.corners`), not tunables of their own.
+            #expect(Metrics.panelCornerRadius == 10 && Metrics.itemCornerRadius == 6, "Compact keeps its 10 pt panels and 6 pt items")
             #expect(Self.typeSizes() == [12, 12, 10.5, 11, 16, 10.5, 20, 13])
             #expect(Metrics.tokens.resolve(compact: 2, comfortable: 4, token: "panePadding") == 2, "the density's pane padding")
             #expect(Metrics.space1 == ChromeTunables.space1.value && Metrics.space3 == ChromeTunables.space3.value
