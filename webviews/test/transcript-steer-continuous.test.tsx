@@ -700,7 +700,7 @@ test("a turn steered twice keeps every call under one completed-turn fold", () =
   expect(rows.map((_, index) => turnFoldFor(rows, index))).toEqual(rows.map(() => `${WORKED}-u`));
 });
 
-test("Codex folds interim text under Worked for; Claude folds it into its run's line", () => {
+test("Codex folds interim text under Worked for; Claude keeps it between tool runs", () => {
   let at = START;
   const row = (id: string, kind: string, extra: Partial<AcpmuxRow> = {}): AcpmuxRow => ({
     id,
@@ -724,10 +724,11 @@ test("Codex folds interim text under Worked for; Claude folds it into its run's 
 
   const now = START + 200_000;
   const claude = turnView(rows, new Set(), { now, agentFamily: "claude" });
-  expect(claude.map((each) => each.id)).toEqual(["prompt", "a-one", "final", "summary"]);
+  expect(claude.map((each) => each.id)).toEqual(["prompt", "a-one", "interim", "a-two", "final", "summary"]);
   const run = claude.find((each) => each.id === "a-one");
   expect(run?.foldRun).toBe(true);
-  expect(run?.items?.find((item) => item.kind === "note")?.text).toBe("The first check is still running.");
+  expect(claude.find((each) => each.id === "interim")?.text).toBe("The first check is still running.");
+  expect(claude.find((each) => each.id === "a-two")?.foldRun).toBe(true);
 
   const codex = turnView(rows, new Set(), { now, agentFamily: "codex" });
   expect(codex.some((each) => each.id === "interim")).toBe(false);

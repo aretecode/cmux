@@ -172,9 +172,52 @@ for (const family of ["claude", "claude-sr2", "gemini", "muse", "muse-code"]) {
       expect(runs.map((row) => row.id)).toEqual(["w1", "w2"]);
       expect(runs.every((row) => row.foldRun)).toBe(true);
       expect(runs.flatMap((row) => row.items ?? []).map((item) => item.tool?.id)).toEqual([
-        "w1-0", "w1-1", "w2-0", "w2-1", "w2-2",
+        "w1-0",
+        "w1-1",
+        "w2-0",
+        "w2-1",
+        "w2-2",
       ]);
       expect(turnView(structuredClone(rows), new Set(), options).map((row) => row.id)).toEqual(ids(view));
     });
   }
+}
+
+for (const family of ["claude", "gemini", "muse"]) {
+  test(`${family}: the live line keeps the running tool beside short prose`, () => {
+    const running = work("w2", 20_000, 1);
+    running.items![0]!.tool!.status = "in_progress";
+    const rows = turnView(
+      [prompt, work("w1", 1_000, 2), say("result", 10_000, "The tests passed."), running],
+      new Set(),
+      {
+        now: 30_000,
+        agentFamily: family,
+        liveRuns: true,
+        lineBelow: true,
+        working: true,
+      },
+    );
+    expect(rows.find((row) => row.id === "result")?.text).toBe("The tests passed.");
+    expect(rows.find((row) => row.id === "w1")?.foldRun).toBe(true);
+    expect(rows.at(-1)?.doing).toBe("Run");
+  });
+
+  test(`${family}: work started after a summary preserves short prose too`, () => {
+    const rows = turnView(
+      [
+        prompt,
+        say("first", 50_000, "Done."),
+        end,
+        work("tail1", 61_000, 2),
+        say("result", 62_000, "The tests passed."),
+        work("tail2", 63_000, 2),
+      ],
+      new Set(),
+      { now: 70_000, agentFamily: family, liveRuns: true, lineBelow: true, working: true },
+    );
+    expect(rows.find((row) => row.id === "result")?.text).toBe("The tests passed.");
+    expect(rows.find((row) => row.id === "tail1")?.foldRun).toBe(true);
+    expect(rows.find((row) => row.id === "tail2")?.foldRun).toBe(true);
+  });
 }
