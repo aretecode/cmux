@@ -78,7 +78,7 @@ struct CmdNThenNewTerminalTabTests {
     /// own New Tab page, taking that page's view from the daemon's pane (the terminal tab selected over an empty pane for
     /// 20 s). The order here is fixed: the Ctrl-`'s create waits for a gate this test opens only after the daemon's pane
     /// mounted, so no daemon terminal and no focus expectation can show the terminal there before the hand-over is read.
-    @Test func theDaemonsPaneThatTakesCmdNsStandInOverShowsTheTerminalTheStandInShowed() async throws {
+    @Test(arguments: 1...10) func theDaemonsPaneThatTakesCmdNsStandInOverShowsTheTerminalTheStandInShowed(round: Int) async throws {
         try await PasswordManagerRouteTests.withApp { services, _ in
             services.agentTabs.localHost = AgentSessionRef.host(installID: "cn-cmdn-ctrlbt-handover")
             try #require(services.agentTabs.canHostChat, "this build has no New Tab page")
