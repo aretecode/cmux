@@ -2,7 +2,7 @@
 # Verify the exact pushed HEAD on hosted runners and download its macOS arm64 TUI.
 set -euo pipefail
 
-REPO="manaflow-ai/cmux"
+REPO="aretecode/cmux"
 WORKFLOW="cmux-tui.yml"
 
 usage() {
