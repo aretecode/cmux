@@ -158,3 +158,23 @@ for (const family of ["gemini", "muse"])
     expect(rows.filter((row) => row.kind === "activity").every((row) => row.foldRun === true)).toBe(true);
     expect(rows.find((row) => row.kind === "turnSummary")?.folded).toBe(false);
   });
+
+for (const family of ["claude", "claude-sr2", "gemini", "muse", "muse-code"]) {
+  for (const status of ["running", "completed", "cancelled", "failed"]) {
+    test(`${family}: ${status} keeps short results between compact tool runs`, () => {
+      const result = say("result", 10_000, "The tests passed.");
+      const rows = [prompt, work("w1", 1_000, 2), result, work("w2", 20_000, 3)];
+      if (status !== "running") rows.push(say("answer", 50_000, "Checked both call sites."), { ...end, status });
+      const options = { now: 70_000, agentFamily: family, liveRuns: true, working: status === "running" };
+      const view = turnView(rows, new Set(), options);
+      expect(view.find((row) => row.id === "result")).toMatchObject({ kind: "assistant", text: result.text });
+      const runs = view.filter((row) => row.kind === "activity" && !row.merged);
+      expect(runs.map((row) => row.id)).toEqual(["w1", "w2"]);
+      expect(runs.every((row) => row.foldRun)).toBe(true);
+      expect(runs.flatMap((row) => row.items ?? []).map((item) => item.tool?.id)).toEqual([
+        "w1-0", "w1-1", "w2-0", "w2-1", "w2-2",
+      ]);
+      expect(turnView(structuredClone(rows), new Set(), options).map((row) => row.id)).toEqual(ids(view));
+    });
+  }
+}
