@@ -1366,11 +1366,12 @@ class StatusOnlyChecks(unittest.TestCase):
 
 
 class JoblessStatusChecks(unittest.TestCase):
-    """Vercel posts a commit status no Actions job gave (cmuxterm-hq#7039, 2026-11-04: "Deployment rate limited —
-    retry in 24 hours." on the head and on main's tip alike). It is excused only when the newest base commit with
-    that context has the same state and description."""
+    """A commit status no Actions job gave (cmuxterm-hq#7039, 2026-11-04: Vercel's "Deployment rate limited — retry in
+    24 hours." on the head and on main's tip alike). Any such status but Vercel's is excused only when the newest
+    base commit with that context has the same state and description; Vercel's follows vercel_merge_gate.py
+    (VercelAdvisory)."""
 
-    CONTEXT = "Vercel"
+    CONTEXT = "Preview deploy"
     LIMITED = "Deployment rate limited — retry in 24 hours."
     TIP, OLDER = "c" * 40, "d" * 40
 
@@ -1406,14 +1407,14 @@ class JoblessStatusChecks(unittest.TestCase):
         return excuse.judge(REPO, "feat-cmux-next", HEAD, [], self.gh, checks=[self.CONTEXT])
 
     def test_the_same_failure_with_the_same_description_on_the_base_tip_is_excused(self):
-        self.assertEqual(self.judge(), [f"excused 'Vercel': base {self.TIP} status failure \"{self.LIMITED}\""])
+        self.assertEqual(self.judge(), [f"excused 'Preview deploy': base {self.TIP} status failure \"{self.LIMITED}\""])
 
     def test_the_newest_base_commit_with_the_context_decides(self):
         self.base[self.TIP] = []  # the tip has no Vercel status yet
         with self.assertRaisesRegex(excuse.Refused, f"{self.OLDER} has it success: Deployment has completed"):
             self.judge()
         self.base[self.OLDER] = [dict(self.head)]
-        self.assertEqual(self.judge(), [f"excused 'Vercel': base {self.OLDER} status failure \"{self.LIMITED}\""])
+        self.assertEqual(self.judge(), [f"excused 'Preview deploy': base {self.OLDER} status failure \"{self.LIMITED}\""])
 
     def test_another_description_on_the_base_is_refused(self):
         self.base[self.TIP] = [dict(self.head, description="Deployment failed")]
@@ -1426,7 +1427,7 @@ class JoblessStatusChecks(unittest.TestCase):
             self.judge()
 
     def test_a_status_the_base_does_not_have_is_refused(self):
-        self.base = {self.TIP: [], self.OLDER: [dict(self.head, context="Vercel – other-project")]}
+        self.base = {self.TIP: [], self.OLDER: [dict(self.head, context="Preview deploy – other-project")]}
         with self.assertRaisesRegex(excuse.Refused, "none of the 10 newest feat-cmux-next commits has a status"):
             self.judge()
 
@@ -1438,11 +1439,28 @@ class JoblessStatusChecks(unittest.TestCase):
 
     def test_a_status_linking_an_actions_run_is_never_judged_by_its_base_status(self):
         self.head["target_url"] = f"https://github.com/{REPO}/actions/runs/10"
-        with self.assertRaisesRegex(excuse.Refused, "no job 'Vercel' in run 10"):
+        with self.assertRaisesRegex(excuse.Refused, "no job 'Preview deploy' in run 10"):
             self.judge()
         self.assertFalse(any("commits?sha=" in route for route in self.gh.routes))
 
-    IGNORED = "Canceled by Ignored Build Step"
+    def test_another_red_still_needs_its_own_excuse(self):
+        self.gh.jobs[1]["name"] = "brand new red"
+        self.gh.logs[1] = log("brand new red", TEST_STEP, "##[error]something new")
+        with self.assertRaisesRegex(excuse.Refused, "brand new red"):
+            excuse.judge(REPO, "feat-cmux-next", HEAD, [10], self.gh, checks=[self.CONTEXT])
+
+
+
+class VercelAdvisory(JoblessStatusChecks):
+    """A Vercel status red is no result, whatever its reason, when the PR changes none of vercel_merge_gate.py's web
+    paths, and refused when it changes one (cmuxterm-hq#7192, 2026-11-05). The list is the gate's own."""
+
+    CONTEXT = "Vercel"
+
+    def setUp(self):
+        super().setUp()
+        self.base = {}  # the base's Vercel statuses are never read
+        self.pr_files("tools/fleet-reconcilers/probes.py")
 
     def pr_files(self, *paths, number=7192, changed=None):
         """The one GraphQL read pr_paths makes: the PR into feat-cmux-next whose head is HEAD and its files."""
@@ -1458,48 +1476,60 @@ class JoblessStatusChecks(unittest.TestCase):
 
         self.gh.run = run
 
-    def test_rate_limited_vercel_is_no_result_when_the_base_skipped_its_build_and_web_is_untouched(self):
-        self.base[self.TIP] = [dict(self.head, state="success", description=self.IGNORED)]
-        self.pr_files("tools/fleet-reconcilers/probes.py")
+    def test_rate_limited_off_the_web_is_no_result(self):
         self.assertEqual(self.judge(), [
-            f"excused 'Vercel': no result: \"{self.LIMITED}\" (Vercel built nothing), base status success "
-            f"\"{self.IGNORED}\" (a skipped build), and #7192 changes no web/ files"])
+            f"excused 'Vercel': advisory, no result: failure \"{self.LIMITED}\" and #7192 changes no web path of "
+            "vercel_merge_gate.py (1 files)"])
         self.assertEqual(len(self.graphql), 1)
-        self.assertFalse(any("/compare/" in route for route in self.gh.routes))  # no REST diff read
+        self.assertFalse(any("/compare/" in route or "commits?sha=" in route for route in self.gh.routes))
 
-    def test_rate_limited_vercel_on_a_pr_that_touches_web_is_refused(self):
-        self.base[self.TIP] = [dict(self.head, state="success", description=self.IGNORED)]
+    def test_any_other_vercel_failure_off_the_web_is_no_result(self):
+        self.head.update(state="error", description="Deployment has failed")
+        self.assertEqual(self.judge(), [
+            "excused 'Vercel': advisory, no result: error \"Deployment has failed\" and #7192 changes no web path of "
+            "vercel_merge_gate.py (1 files)"])
+
+    def test_a_vercel_failure_on_a_web_path_is_refused(self):
         self.pr_files("tools/x.py", "web/app/page.tsx")
-        with self.assertRaisesRegex(excuse.Refused, r"#7192 changes web/ \(web/app/page.tsx\)"):
+        with self.assertRaisesRegex(excuse.Refused, r"#7192 changes a web path of vercel_merge_gate.py \(web/app/page.tsx\)"):
+            self.judge()
+        self.pr_files("package.json")
+        with self.assertRaisesRegex(excuse.Refused, r"\(package.json\)"):
             self.judge()
 
-    def test_rate_limited_vercel_is_refused_when_the_base_really_built(self):
-        self.base[self.TIP] = [dict(self.head, state="success", description="Deployment has completed")]
-        self.pr_files("tools/x.py")
-        with self.assertRaisesRegex(excuse.Refused, "has it success: Deployment has completed"):
-            self.judge()
+    def test_the_web_paths_are_the_gates(self):
+        self.pr_files("scripts/ci/base_red_excuse.py")
+        self.assertIn("advisory, no result", self.judge()[0])
+        with unittest.mock.patch.object(excuse.vercel_gate, "WEB_PREFIXES", excuse.vercel_gate.WEB_PREFIXES + ("scripts/",)):
+            with self.assertRaisesRegex(excuse.Refused, r"changes a web path .*\(scripts/ci/base_red_excuse.py\)"):
+                self.judge()
+        self.assertEqual(Path(excuse.vercel_gate.__file__).name, "vercel_merge_gate.py")
+
+    def test_a_review_bot_named_vercel_is_not_a_vercel_deploy(self):
+        self.CONTEXT = self.head["context"] = "Vercel Agent Review"
+        self.base = {self.TIP: [dict(self.head)]}
+        self.assertEqual(self.judge(), [f"excused 'Vercel Agent Review': base {self.TIP} status failure \"{self.LIMITED}\""])
         self.assertEqual(self.graphql, [])
 
-    def test_another_vercel_failure_is_refused_even_when_the_base_skipped_its_build(self):
-        self.head["description"] = "Deployment has failed"
-        self.base[self.TIP] = [dict(self.head, state="success", description=self.IGNORED)]
-        self.pr_files("tools/x.py")
-        with self.assertRaisesRegex(excuse.Refused, f"has it success: {self.IGNORED}"):
-            self.judge()
-        self.assertEqual(self.graphql, [])
-
-    def test_rate_limited_vercel_is_refused_when_github_lists_too_few_files(self):
-        self.base[self.TIP] = [dict(self.head, state="success", description=self.IGNORED)]
+    def test_a_file_list_github_cut_short_is_refused(self):
         self.pr_files("tools/x.py", changed=150)
         with self.assertRaisesRegex(excuse.Refused, "listed 1 of its 150 changed files"):
             self.judge()
 
-    def test_another_red_still_needs_its_own_excuse(self):
-        self.gh.jobs[1]["name"] = "brand new red"
-        self.gh.logs[1] = log("brand new red", TEST_STEP, "##[error]something new")
-        with self.assertRaisesRegex(excuse.Refused, "brand new red"):
-            excuse.judge(REPO, "feat-cmux-next", HEAD, [10], self.gh, checks=[self.CONTEXT])
+    def test_no_pr_for_the_head_is_refused(self):
+        self.gh.run = lambda args: json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
+        with self.assertRaisesRegex(excuse.Refused, "no PR into feat-cmux-next has head"):
+            self.judge()
 
+    # The inherited same-status tests are about non-Vercel statuses.
+    test_the_same_failure_with_the_same_description_on_the_base_tip_is_excused = None
+    test_the_newest_base_commit_with_the_context_decides = None
+    test_another_description_on_the_base_is_refused = None
+    test_another_state_on_the_base_is_refused = None
+    test_a_status_the_base_does_not_have_is_refused = None
+    test_a_status_with_no_description_is_refused = None
+    test_a_status_linking_an_actions_run_is_never_judged_by_its_base_status = None
+    test_another_red_still_needs_its_own_excuse = None
 
 class BaseRedWindow(unittest.TestCase):
     """2026-11-01: the tip Swift suite's red set churns (runs 41282022128, 41298073172, 41303556638), so a failing

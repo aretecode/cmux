@@ -68,6 +68,11 @@ Refused, job_for, latest_checks = _evidence.Refused, _evidence.job_for, _evidenc
 # A read GitHub rate-limited, where the evidence reader tells it apart (main's main_fix_evidence.py): exit 3, which
 # gh-merge-green reports as a rate limit rather than a red. A reader without it raises Refused (exit 1).
 RateLimited = getattr(_evidence, "RateLimited", ())
+# Which paths make Vercel matter: vercel_merge_gate.py's list, the one gh-merge-green reads, loaded from beside this file
+# (a `git archive ... scripts/ci` copy carries both) so the two never disagree.
+_gate_spec = importlib.util.spec_from_file_location("vercel_merge_gate", Path(__file__).with_name("vercel_merge_gate.py"))
+vercel_gate = importlib.util.module_from_spec(_gate_spec)
+_gate_spec.loader.exec_module(vercel_gate)
 
 
 class RateLimitedRead(Exception):
@@ -901,7 +906,9 @@ def status_job(repo: str, sha: str, name: str, github, base: str | None = None) 
                           f"{found.get('conclusion')}; nothing to compare with the base")
         return found
     if not match and base and state in ("failure", "error"):
-        return base_status(repo, base, name, state, status.get("description") or "", github, sha=sha)
+        if vercel_gate.is_vercel_status(name):
+            return vercel_advisory(repo, base, sha, name, state, status.get("description") or "", github)
+        return base_status(repo, base, name, state, status.get("description") or "", github)
     where = f"run {match[1]} (its target_url)" if match else f"any run that tested {sha}"
     raise Refused(f"'{name}': a status ({state}: {status.get('description') or 'no description'}) with no job "
                   f"'{job_name}' in {where} to compare with the base")
@@ -914,14 +921,10 @@ def status_job(repo: str, sha: str, name: str, github, base: str | None = None) 
 # with another description, stays the head's.
 BASE_STATUS_COMMITS = 10
 
-# Vercel's build quota (2026-11-05, cmuxterm-hq#7192): the head reads "Deployment rate limited — retry in 24 hours."
-# while the base's newest Vercel status is a build Vercel skipped ("Canceled by Ignored Build Step"), so the two never
-# match. A rate-limited deploy built nothing, so it is no result rather than a red, but only when the base did not
-# build either (an ignored or canceled build, never a real success) and the PR changes nothing under web/, the tree
-# Vercel deploys. Any other Vercel failure, or a PR that touches web/, still refuses.
-VERCEL_RATE_LIMITED = re.compile(r"Deployment rate limited\b")
-VERCEL_NOT_BUILT = re.compile(r"(?i)\bIgnored Build Step\b|\bcancel(?:l?ed)?\b")
-VERCEL_TREE = "web/"
+# Vercel is advisory off the web (2026-11-05, cmuxterm-hq#7192): a Vercel status red ("Deployment rate limited — retry
+# in 24 hours.", or any other failure) on a PR that changes none of vercel_merge_gate.py's web paths is no result, as
+# gh-merge-green already treats it; the gate's WEB_PREFIXES and WEB_FILES are the one list. A PR that changes a web
+# path, or whose changed files cannot all be read, still refuses.
 PR_FILES_QUERY = ("query($owner: String!, $name: String!, $oid: GitObjectID!) { repository(owner: $owner, name: $name) "
                   "{ object(oid: $oid) { ... on Commit { associatedPullRequests(first: 10) { nodes { number "
                   "baseRefName headRefOid changedFiles files(first: 100) { nodes { path } pageInfo { hasNextPage } } "
@@ -942,28 +945,24 @@ def pr_paths(repo: str, base: str, sha: str, github) -> tuple[int, list[str]]:
         paths = [node.get("path") for node in files.get("nodes") or [] if isinstance(node.get("path"), str)]
         if (files.get("pageInfo") or {}).get("hasNextPage") or len(paths) != pr.get("changedFiles"):
             raise Refused(f"#{pr.get('number')}: GitHub listed {len(paths)} of its {pr.get('changedFiles')} changed "
-                          f"files, too few to show it stays out of {VERCEL_TREE}")
+                          "files, too few to show it stays off the web paths")
         return pr.get("number"), paths
     raise Refused(f"no PR into {base} has head {sha} to read its changed files from")
 
 
-def vercel_not_built(repo: str, base: str, sha: str | None, name: str, description: str, found: dict, github) -> str | None:
-    """The audit line for a rate-limited Vercel deploy on SHA when the base's own Vercel status is a skipped build and
-    the PR changes nothing under web/; None when the rule does not apply (the caller refuses as before)."""
-    if not (sha and name.startswith("Vercel") and VERCEL_RATE_LIMITED.match(description)):
-        return None
-    if not VERCEL_NOT_BUILT.search(found.get("description") or ""):
-        return None
+def vercel_advisory(repo: str, base: str, sha: str, name: str, state: str, description: str, github) -> str:
+    """The audit line for a Vercel status red on SHA whose PR changes no path vercel_merge_gate.py counts as web;
+    Refused when it changes one."""
     number, paths = pr_paths(repo, base, sha, github)
-    if web := [path for path in paths if path.startswith(VERCEL_TREE)]:
-        raise Refused(f"'{name}': \"{description}\" and #{number} changes {VERCEL_TREE} ({'; '.join(web[:5])}), "
-                      "which Vercel deploys")
-    return (f"excused '{name}': no result: \"{description}\" (Vercel built nothing), base status "
-            f"{found.get('state')} \"{found.get('description')}\" (a skipped build), and #{number} changes no "
-            f"{VERCEL_TREE} files")
+    if vercel_gate.requires_vercel(repo, paths):
+        web = [path for path in paths if vercel_gate.requires_vercel(repo, [path])]
+        raise Refused(f"'{name}': a status ({state}: {description or 'no description'}) and #{number} changes a web "
+                      f"path of vercel_merge_gate.py ({'; '.join(web[:5]) or 'no files listed'})")
+    return (f"excused '{name}': advisory, no result: {state} \"{description or 'no description'}\" and #{number} "
+            f"changes no web path of vercel_merge_gate.py ({len(paths)} files)")
 
 
-def base_status(repo: str, base: str, name: str, state: str, description: str, github, *, sha: str | None = None) -> str:
+def base_status(repo: str, base: str, name: str, state: str, description: str, github) -> str:
     """The audit line excusing jobless status NAME (STATE, DESCRIPTION) when the base has the same, else Refused."""
     if not description:
         raise Refused(f"'{name}': a status ({state}) with no description and no job: nothing to compare with the base")
@@ -973,8 +972,6 @@ def base_status(repo: str, base: str, name: str, state: str, description: str, g
         if found is None:
             continue
         if (found.get("state"), found.get("description") or "") != (state, description):
-            if line := vercel_not_built(repo, base, sha, name, description, found, github):
-                return line
             raise Refused(f"'{name}': a status ({state}: {description}) with no job, and {base} {commit['sha']} has "
                           f"it {found.get('state')}: {found.get('description') or 'no description'}")
         return f"excused '{name}': base {commit['sha']} status {state} \"{description}\""
