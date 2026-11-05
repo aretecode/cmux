@@ -76,7 +76,6 @@ async function replayRows(): Promise<AcpmuxRow[]> {
   return rows;
 }
 
-const SHORT = /^Checking step \d+\.$/;
 const LONG = /^Step (\d+) found/;
 /// Which message a long row is (its number in the recording).
 const longAt = (row: AcpmuxRow) => Number(LONG.exec(row.text ?? "")?.[1]);
